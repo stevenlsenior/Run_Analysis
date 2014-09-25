@@ -1,0 +1,220 @@
+Run stats-boy, run!
+========================================================
+
+### Overview
+
+This document summarises my quest to analyse data on my runs. I wanted to test some ideas about the conditions under which I run faster or slower. Full code is included below, in case anyone wants to take advantage of it. This is a case of learning by doing, so the code below will not be perfect. Suggestions and corrections are welcome.
+
+### Getting your data
+
+I use Runkeeper (www.runkeeper.com), but most other activity tracking sites will let you download your data. For Runkeeper, this can be done by going to 'settings' > 'export data'. This will let you download a file containing all of your activities between specified dates in .gpx format. Put the .gpx files in your R working directory.
+
+### Visualising the runs
+
+I used the following code to visualise my data. This is a slightly modified version of code provided at Nathan Yau's wonderful blog, Flowing Data (www.flowingdata.com). The specific post can be found at www.flowingdata.com/2014/02/05/where-people-run/. The only modification that I made was to add a section of code which skips routes not in a given gps range (I wanted to focus on my runs in London). I also picked a slightly nasty colour for plotting. I haven't yet got around to figuring out how to lay this over a map of London, but subscribers to Flowing Data can get the instructions there.
+
+```{r}
+library(plotKML)
+
+# GPX files downloaded from Runkeeper
+files <- dir(pattern = "\\.gpx")
+
+# Consolidate routes in one drata frame
+index <- c()
+latitude <- c()
+longitude <- c()
+for (i in 1:length(files)) {
+  
+  route <- readGPX(files[i])
+  location <- route$tracks[[1]][[1]]
+  # Skip routes not in range 
+    # London: -0.10 < lon < -0.20 
+  if(location$lon < -0.20 || location$lon > -0.10){
+    next
+  }
+  else{
+  index <- c(index, rep(i, dim(location)[1]))
+  latitude <- c(latitude, location$lat)
+  longitude <- c(longitude, location$lon)
+  }
+}
+routes <- data.frame(cbind(index, latitude, longitude))
+
+# Map the routes
+ids <- unique(index)
+plot(routes$longitude, routes$latitude, type="n", axes=FALSE, xlab="", ylab="", main="", asp=1)
+for (i in 1:length(ids)) {
+  currRoute <- subset(routes, index==ids[i])
+  lines(currRoute$longitude, currRoute$latitude, col="#c51b8a")
+}
+```
+
+### Analysing the runs
+
+I was interested in understanding what factors affected my average pace. The following code takes each .gpx file and calculates some variables of interest from it (length, duration, average pace). It then scrapes weather data from the marvelous Weather Underground (www.wunderground.com) and adds the max, min and mean temperature for that day in London (actually Heathrow Airport, the nearest weather station), and returns the lot in one big data frame. Wunderground also does weather data by the hour, but I haven't got around to working out how to scrape this yet. Also, don't ask me to derive the haversin formula to convert differences in gps into distances in m. I sort of get it, but only just. Warning: this code can take a long time to run, especially the web-scraping. So I've cheated. The code below won't run, and I'll load in the data file that it  produced separately.
+
+```{r, eval=FALSE }
+library(plotKML)
+
+# GPX files downloaded from Runkeeper
+files <- dir(pattern = "\\.gpx")
+
+# Initialise variables of interest
+start_time <- vector()
+class(start_time) <- "POSIXct"
+end_time <-vector()
+class(end_time) <- "POSIXct"
+duration <-vector()
+dist <- c()
+elevation <- c()
+avg_pace <-c()
+temp_mean <- c()
+temp_max <- c()
+temp_min <- c()
+rain <- c()
+
+# Collect data for each run
+for (i in 1:length(files)) {
+  
+  # Read in files
+  route <- readGPX(files[i])
+  location <- route$tracks[[1]][[1]]
+  
+  # Limit to runs in London
+  if(location$lon < -0.20 || location$lon > -0.10){
+    next
+  }
+  else{
+    # Append values for this track
+    date <- c(date, as.POSIXct(location$time[1], format = "%Y-%m-%d", tz = "GMT"))
+    start_time <- c(start_time, as.POSIXct(location$time[1], format = "%Y-%m-%dT%H:%M:%S", tz = "GMT"))
+    end_time <- c(end_time, as.POSIXct(location$time[length(location$time)], format = "%Y-%m-%dT%H:%M:%S", tz = "GMT"))
+    duration <- c(duration, (as.numeric(end_time[length(end_time)] - start_time[length(start_time)])))
+    
+    # Calculate route length using Haversin formula
+    track_dist <- 0
+    for(j in 2:length(location$lon)){
+      lon1 <- (location$lon[j-1])*(pi/180)
+      lon2 <- (location$lon[j])*(pi/180)
+      lat1 <- (location$lat[j-1])*(pi/180)
+      lat2 <- (location$lat[j])*(pi/180)
+      
+      dlat <- lat2 - lat1
+      dlon <- lon2 - lon1
+      
+      a <- (sin(dlat/2))^2 + cos(lat1) * cos(lat2) * (sin(dlon/2))^2
+      c <- 2 * atan2(sqrt(a), sqrt(1-a))
+      
+      # Km - R = 6367; Miles - R = 3956
+      R <- 6367
+      d <- R * c
+      track_dist <- track_dist + d
+    }
+    dist <- c(dist, track_dist)
+    elevation <- c(elevation, as.numeric(location$ele[length(location$ele)]) - as.numeric(location$ele[1]))
+  }
+}
+
+avg_pace <- duration / dist
+
+# Scrape weather data from weatherunderground.com
+path_base <- "http://www.wunderground.com/history/airport/EGLL/"
+path_end <- "DailyHistory.html"
+pattern_temp <- ">(\\-*[0-9]+)</span>&nbsp;&deg;C"
+pattern_rain <- ">([0-9]+\\.[0-9]+)</span>&nbsp;mm"
+
+for (l in 1:length(date)){
+  path_date <- strftime(date[l], format = "%Y/%m/%d/")
+  path <- paste(path_base, path_date, path_end, sep = "")
+  page <- readLines(path) 
+  
+  temp_mean_line <- grep("Mean Temperature", page) + 2
+  temp_max_line <- grep("Max Temperature", page) + 2
+  temp_min_line <- grep("Min Temperature", page) + 2
+  rain_line <- grep(">([0-9]+.[0-9]+)</span>&nbsp;mm</span", page)
+  
+  temp_mean_index <- regexec(pattern_temp, page[temp_mean_line])
+  temp_max_index <- regexec(pattern_temp, page[temp_max_line])
+  temp_min_index <- regexec(pattern_temp, page[temp_min_line])
+  rain_index <- regexec(pattern_rain, page[rain_line])
+  
+  temp_mean <- c(temp_mean, as.numeric(regmatches(page[temp_mean_line], temp_mean_index)[[1]][2]))
+  temp_max <- c(temp_max, as.numeric(regmatches(page[temp_max_line], temp_max_index)[[1]][2]))
+  temp_min <- c(temp_min, as.numeric(regmatches(page[temp_min_line], temp_min_index)[[1]][2]))
+  rain <- c(rain, as.numeric(regmatches(page[rain_line], rain_index)[[1]][2]))
+}
+
+# Compile variables into dataframe
+run_data <- data.frame (date, start_time, end_time, duration, dist, avg_pace, elevation, temp_mean, temp_max, temp_min, rain)
+```
+
+```{r echo = FALSE}
+load("run_data")
+```
+
+Et voila! We now have a data frame that looks like this:
+
+```{r}
+str(run_data)
+```
+
+It's worth plotting the data, to check for outliers:
+
+```{r}
+hist(run_data$avg_pace)
+```
+
+Which shows a few runs with pace < 1 min per km. I'm not that fast, so we can reasonably assume something odd happened with the gps here. To deal with this, I'll create a cleaned-up data set, removing the very low paces, any runs with distance 0 and any NA values. 
+
+```{r}
+# Remove runs with pace less than 1 min / km or Inf
+run_data_clean <- run_data[run_data$avg_pace > 1 & run_data$avg_pace != Inf,] 
+```
+
+### Investigating the relationship between temperature and pace
+
+There's lots of fun to be had with this data, but for illustrative purposes, I'll focus on mean temperature and pace. First, let's fit a linear model, with avg_pace as the response variable, and temp_mean, elevation and rain as the dependent variables:
+
+```{r}
+pace_model <- lm(avg_pace ~ temp_mean + elevation + rain, data = run_data_clean)
+summary(pace_model)
+```
+
+Let's get rid of how much it rained that day, because it's not significant:
+
+```{r}
+pace_model <- lm(avg_pace ~ temp_mean + elevation, data = run_data_clean)
+```
+
+Interestingly, the adjusted R-squared has gone down, so the rain variable was improving the prediction. But I'm happy to leave it out because I'm interested in those things that are statistically significant predictors of running pace. Better plot those variables before jumping to any conclusions though. And while we're at it, lets plot a regression line (R makes this easy using the abline function and the linear model):
+
+```{r}
+par(mfrow = c(1,2))
+plot(y = run_data_clean$avg_pace, x = run_data_clean$temp_mean, main = "Average pace by temperature", ylab = "Average pace (min/km)", xlab = "Daily average temperature (deg C)")
+pace_by_temp <- lm(avg_pace ~ temp_mean, data = run_data_clean)
+abline(pace_by_temp, color  = 'red')
+
+plot(y = run_data_clean$avg_pace, x = run_data_clean$elevation, main = "Average pace by climb", ylab = "Average pace (min/km)", xlab = "Climb (m)")
+pace_by_climb <- lm(avg_pace ~ elevation, data = run_data_clean)
+abline(pace_by_climb, color = 'red')
+```
+
+Which is pretty cool. Or at least I thought so anyway. But it's important to check those assumptions, so let's make sure that the residuals from the model are normally distributed:
+
+```{r}
+par(mfrow = c(1,1))
+qqnorm(pace_model$residuals)
+qqline(pace_model$residuals)
+hist(pace_model$residuals)
+```
+
+We can see that the residuals are a bit left-skewed, but are centred around zero. On the qqplot, we can see that the residuals are normally distributed, apart from at the extremes, where there is quite a lot of deviation from the normal line. Plotting the residuals shows that they don't vary by either temperature or metres climbed:
+
+```{r}
+par(mfrow = c(2,1))
+plot(x = run_data_clean$temp_mean, y = pace_model$residuals)
+abline(a = 0, b = 0, lty = "dashed")
+plot(x = run_data_clean$elevation, y = pace_model$residuals)
+abline(a = 0, b = 0, lty = "dashed")
+```
+
